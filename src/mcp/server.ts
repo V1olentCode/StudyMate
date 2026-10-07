@@ -362,7 +362,7 @@ function createMcpServer() {
 
       const notes = db
         .prepare(
-          `SELECT id, title, subject
+          `SELECT id, title, subject, content
            FROM notes
            WHERE LOWER(subject) = LOWER(?)
            ORDER BY id`
@@ -371,6 +371,7 @@ function createMcpServer() {
         id: number;
         title: string;
         subject: string;
+        content: string;
       }[];
 
       if (notes.length === 0) {
@@ -408,12 +409,18 @@ function createMcpServer() {
         };
       }
 
-      const existingSessions = db
+      // Existing sessions for this subject.
+      const existingSubjectSessions = db
         .prepare(
-          `SELECT session_date, start_time, end_time
-           FROM study_sessions`
+          `SELECT id, subject, topic, session_date, start_time, end_time
+           FROM study_sessions
+           WHERE LOWER(subject) = LOWER(?)
+           ORDER BY session_date, start_time`
         )
-        .all() as {
+        .all(subject) as {
+        id: number;
+        subject: string;
+        topic: string;
         session_date: string;
         start_time: string;
         end_time: string;
@@ -430,6 +437,15 @@ function createMcpServer() {
       ];
 
       const finalAssessment = assessments[assessments.length - 1]!;
+
+      const firstQuiz = assessments.find(
+        (assessment) => assessment.type === "quiz"
+      );
+
+      // Never schedule on any assessment date.
+      const assessmentDates = new Set(
+        assessments.map((assessment) => assessment.event_date)
+      );
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -450,8 +466,13 @@ function createMcpServer() {
         date < finalAssessmentDate;
         date.setDate(date.getDate() + 1)
       ) {
-        const dateString =
-          `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+        const dateString = `${date.getFullYear()}-${String(
+          date.getMonth() + 1
+        ).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+        if (assessmentDates.has(dateString)) {
+          continue;
+        }
 
         const dayName = dayNames[date.getDay()]!;
 
@@ -460,14 +481,14 @@ function createMcpServer() {
         );
 
         for (const slot of matchingAvailability) {
-          const isOccupied = existingSessions.some(
+          const alreadyExists = existingSubjectSessions.some(
             (session) =>
               session.session_date === dateString &&
               session.start_time === slot.start_time &&
               session.end_time === slot.end_time
           );
 
-          if (!isOccupied) {
+          if (!alreadyExists) {
             availableDates.push({
               date: dateString,
               day: dayName,
@@ -488,32 +509,75 @@ function createMcpServer() {
         return a.startTime.localeCompare(b.startTime);
       });
 
-      // Assignments need one focused work session.
+      // ==================================================
+      // NO AVAILABLE SLOTS
+      // ==================================================
+
+      if (
+        availableDates.length === 0 &&
+        existingSubjectSessions.length === 0
+      ) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                subject,
+                milestones: assessments,
+                finalAssessment,
+                notes,
+                sessions: [],
+                planningSummary: {
+                  totalAvailableSlots: 0,
+                  sessionsCreated: 0,
+                  existingSessions: 0,
+                  firstQuiz: firstQuiz ?? null,
+                },
+                message:
+                  `No usable study slots are available before ${finalAssessment.title}. ` +
+                  `Your saved availability does not provide a free slot before the assessment dates. ` +
+                  `Add more availability if you want StudyMate to create study sessions.`,
+              }),
+            },
+          ],
+        };
+      }
+
+      // ==================================================
+      // ASSIGNMENT
+      // ==================================================
+
       if (finalAssessment.type === "assignment") {
-        if (availableDates.length === 0) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `No available study slots before the assignment.`,
-              },
-            ],
-          };
+        const sessions = [...existingSubjectSessions];
+
+        if (availableDates.length > 0) {
+          const slot = availableDates[0]!;
+
+          const result = db
+            .prepare(
+              `INSERT OR IGNORE INTO study_sessions
+               (subject, topic, session_date, start_time, end_time)
+               VALUES (?, ?, ?, ?, ?)`
+            )
+            .run(
+              subject,
+              finalAssessment.title,
+              slot.date,
+              slot.startTime,
+              slot.endTime
+            );
+
+          if (result.changes > 0) {
+            sessions.push({
+              id: Number(result.lastInsertRowid),
+              subject,
+              topic: finalAssessment.title,
+              session_date: slot.date,
+              start_time: slot.startTime,
+              end_time: slot.endTime,
+            });
+          }
         }
-
-        const slot = availableDates[0]!;
-
-        db.prepare(
-          `INSERT OR IGNORE INTO study_sessions
-           (subject, topic, session_date, start_time, end_time)
-           VALUES (?, ?, ?, ?, ?)`
-        ).run(
-          subject,
-          finalAssessment.title,
-          slot.date,
-          slot.startTime,
-          slot.endTime
-        );
 
         return {
           content: [
@@ -523,43 +587,24 @@ function createMcpServer() {
                 subject,
                 milestones: assessments,
                 finalAssessment,
-                sessions: [
-                  {
-                    topic: finalAssessment.title,
-                    purpose: "assignment",
-                    date: slot.date,
-                    day: slot.day,
-                    startTime: slot.startTime,
-                    endTime: slot.endTime,
-                  },
-                ],
+                notes,
+                sessions,
+                planningSummary: {
+                  availableNewSlots: availableDates.length,
+                  sessionsCreated:
+                    sessions.length - existingSubjectSessions.length,
+                  existingSessions: existingSubjectSessions.length,
+                  totalSessions: sessions.length,
+                },
               }),
             },
           ],
         };
       }
 
-      /*
-       * Quizzes and exams are treated as milestones
-       * in one continuous study plan.
-       */
-      const firstQuiz = assessments.find(
-        (assessment) => assessment.type === "quiz"
-      );
-
-      const sessions: {
-        topic: string;
-        purpose: string;
-        date: string;
-        day: string;
-        startTime: string;
-        endTime: string;
-      }[] = [];
-
-      const sessionCount = Math.min(
-        availableDates.length,
-        Math.max(notes.length, 1)
-      );
+      // ==================================================
+      // QUIZZES + EXAMS
+      // ==================================================
 
       const insertSession = db.prepare(
         `INSERT OR IGNORE INTO study_sessions
@@ -567,7 +612,18 @@ function createMcpServer() {
          VALUES (?, ?, ?, ?, ?)`
       );
 
-      for (let i = 0; i < sessionCount; i++) {
+      const newlyCreatedSessions: {
+        id: number;
+        subject: string;
+        topic: string;
+        session_date: string;
+        start_time: string;
+        end_time: string;
+      }[] = [];
+
+      // Use every currently available slot.
+      // Notes can repeat across multiple sessions.
+      for (let i = 0; i < availableDates.length; i++) {
         const slot = availableDates[i]!;
         const note = notes[i % notes.length]!;
 
@@ -579,7 +635,7 @@ function createMcpServer() {
           ? `Prepare for ${firstQuiz.title}`
           : `Prepare for ${finalAssessment.title}`;
 
-        insertSession.run(
+        const result = insertSession.run(
           subject,
           note.title,
           slot.date,
@@ -587,15 +643,27 @@ function createMcpServer() {
           slot.endTime
         );
 
-        sessions.push({
-          topic: note.title,
-          purpose,
-          date: slot.date,
-          day: slot.day,
-          startTime: slot.startTime,
-          endTime: slot.endTime,
-        });
+        if (result.changes > 0) {
+          newlyCreatedSessions.push({
+            id: Number(result.lastInsertRowid),
+            subject,
+            topic: note.title,
+            session_date: slot.date,
+            start_time: slot.startTime,
+            end_time: slot.endTime,
+          });
+        }
       }
+
+      // Fetch the complete study plan after creation.
+      const allSessions = db
+        .prepare(
+          `SELECT id, subject, topic, session_date, start_time, end_time
+           FROM study_sessions
+           WHERE LOWER(subject) = LOWER(?)
+           ORDER BY session_date, start_time`
+        )
+        .all(subject);
 
       return {
         content: [
@@ -605,10 +673,13 @@ function createMcpServer() {
               subject,
               milestones: assessments,
               finalAssessment,
-              sessions,
+              notes,
+              sessions: allSessions,
               planningSummary: {
-                totalAvailableSlots: availableDates.length,
-                sessionsCreated: sessions.length,
+                availableNewSlots: availableDates.length,
+                sessionsCreated: newlyCreatedSessions.length,
+                existingSessions: existingSubjectSessions.length,
+                totalSessions: allSessions.length,
                 firstQuiz: firstQuiz ?? null,
               },
             }),
@@ -885,7 +956,6 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // Each MCP connection gets its own server + transport.
   const server = createMcpServer();
 
   const transport = new NodeStreamableHTTPServerTransport({

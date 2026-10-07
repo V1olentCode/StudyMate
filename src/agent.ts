@@ -41,6 +41,28 @@ IMPORTANT RULES:
 
 7. When creating a study plan, use the available events, notes, and
    study availability rather than inventing information.
+
+8. When presenting a study plan, only mention study topics that are
+   explicitly supported by the saved notes returned by the tools.
+
+9. Do NOT invent exam topics, chapters, formulas, concepts, or material
+   that does not appear in the user's saved notes.
+
+10. If the saved notes only cover some of the material, clearly say that
+    the current plan is based only on those saved notes.
+
+11. Treat quizzes as milestones toward later exams. Preparation for a
+    quiz should also contribute to preparation for the exam when the
+    available material supports that.
+
+12. Do not claim that a session is specifically for a topic unless that
+    topic is supported by the corresponding saved note.
+
+13. When reporting an existing study plan, use the actual sessions
+    returned by the tool. Do not invent additional sessions.
+
+14. Keep responses concise and practical. Mention important dates,
+    available study material, and scheduled sessions.
 `;
 
 async function main() {
