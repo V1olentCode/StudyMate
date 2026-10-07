@@ -1,52 +1,55 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { createServer } from "node:http";
 import { z } from "zod";
+import { createServer } from "node:http";
 import db from "../data/database.js";
 
 function createMcpServer() {
   const server = new McpServer({
-    name: "studymate",
+    name: "StudyMate",
     version: "1.0.0",
   });
 
-  // Add a task
+  // ==================================================
+  // TASKS
+  // ==================================================
+
   server.registerTool(
     "add_task",
     {
-      description: "Add a study task for the user",
-      inputSchema: {
+      description: "Add a study task.",
+      inputSchema: z.object({
         title: z.string(),
         dueDate: z.string().optional(),
-      },
+      }),
     },
     async ({ title, dueDate }) => {
-      const stmt = db.prepare(
-        "INSERT INTO tasks (title, due_date) VALUES (?, ?)"
-      );
-
-      stmt.run(title, dueDate ?? null);
+      const result = db
+        .prepare(
+          "INSERT INTO tasks (title, due_date) VALUES (?, ?)"
+        )
+        .run(title, dueDate ?? null);
 
       return {
         content: [
           {
             type: "text",
-            text: `Task saved: ${title}${dueDate ? ` (due ${dueDate})` : ""}`,
+            text: `Task added with id ${result.lastInsertRowid}.`,
           },
         ],
       };
     }
   );
 
-  // List all tasks
   server.registerTool(
     "list_tasks",
     {
-      description: "List all study tasks",
+      description: "List all study tasks.",
+      inputSchema: z.object({}),
     },
     async () => {
       const tasks = db
-        .prepare("SELECT id, title, due_date FROM tasks ORDER BY id")
+        .prepare("SELECT * FROM tasks ORDER BY id")
         .all();
 
       return {
@@ -60,60 +63,55 @@ function createMcpServer() {
     }
   );
 
-  // Delete a task
   server.registerTool(
     "delete_task",
     {
-      description: "Delete a study task by its ID",
-      inputSchema: {
-        id: z.number().int().positive(),
-      },
+      description: "Delete a study task by id.",
+      inputSchema: z.object({
+        id: z.number(),
+      }),
     },
     async ({ id }) => {
-      const stmt = db.prepare("DELETE FROM tasks WHERE id = ?");
-      const result = stmt.run(id);
-
-      if (result.changes === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No task found with ID ${id}.`,
-            },
-          ],
-        };
-      }
+      const result = db
+        .prepare("DELETE FROM tasks WHERE id = ?")
+        .run(id);
 
       return {
         content: [
           {
             type: "text",
-            text: `Task ${id} deleted successfully.`,
+            text:
+              result.changes > 0
+                ? `Task ${id} deleted successfully.`
+                : `Task ${id} was not found.`,
           },
         ],
       };
     }
   );
 
-  // Add an academic event
+  // ==================================================
+  // ACADEMIC EVENTS
+  // ==================================================
+
   server.registerTool(
     "add_event",
     {
       description:
-        "Add an academic event such as a quiz, exam, or assignment",
-      inputSchema: {
+        "Add an academic event such as a quiz, exam, or assignment.",
+      inputSchema: z.object({
         title: z.string(),
         subject: z.string(),
-        type: z.enum(["quiz", "exam", "assignment"]),
+        type: z.string(),
         eventDate: z.string(),
-      },
+      }),
     },
     async ({ title, subject, type, eventDate }) => {
-      const stmt = db.prepare(
-        "INSERT INTO events (title, subject, type, event_date) VALUES (?, ?, ?, ?)"
-      );
-
-      stmt.run(title, subject, type, eventDate);
+      db.prepare(
+        `INSERT INTO events
+         (title, subject, type, event_date)
+         VALUES (?, ?, ?, ?)`
+      ).run(title, subject, type, eventDate);
 
       return {
         content: [
@@ -126,36 +124,31 @@ function createMcpServer() {
     }
   );
 
-  // List academic events
   server.registerTool(
     "list_events",
     {
-      description: "List academic events for a subject",
-      inputSchema: {
+      description: "List academic events, optionally filtered by subject.",
+      inputSchema: z.object({
         subject: z.string().optional(),
-      },
+      }),
     },
     async ({ subject }) => {
-      let events;
-
-      if (subject) {
-        events = db
-          .prepare(
-            `SELECT id, title, subject, type, event_date
-             FROM events
-             WHERE LOWER(subject) = LOWER(?)
-             ORDER BY event_date`
-          )
-          .all(subject);
-      } else {
-        events = db
-          .prepare(
-            `SELECT id, title, subject, type, event_date
-             FROM events
-             ORDER BY event_date`
-          )
-          .all();
-      }
+      const events = subject
+        ? db
+            .prepare(
+              `SELECT *
+               FROM events
+               WHERE LOWER(subject) = LOWER(?)
+               ORDER BY event_date`
+            )
+            .all(subject)
+        : db
+            .prepare(
+              `SELECT *
+               FROM events
+               ORDER BY event_date`
+            )
+            .all();
 
       return {
         content: [
@@ -168,144 +161,124 @@ function createMcpServer() {
     }
   );
 
-  // Delete an academic event
   server.registerTool(
     "delete_event",
     {
-      description: "Delete an academic event by its ID",
-      inputSchema: {
-        id: z.number().int().positive(),
-      },
+      description: "Delete an academic event by id.",
+      inputSchema: z.object({
+        id: z.number(),
+      }),
     },
     async ({ id }) => {
-      const stmt = db.prepare("DELETE FROM events WHERE id = ?");
-      const result = stmt.run(id);
-
-      if (result.changes === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No event found with ID ${id}.`,
-            },
-          ],
-        };
-      }
+      const result = db
+        .prepare("DELETE FROM events WHERE id = ?")
+        .run(id);
 
       return {
         content: [
           {
             type: "text",
-            text: `Event ${id} deleted successfully.`,
+            text:
+              result.changes > 0
+                ? `Event ${id} deleted successfully.`
+                : `Event ${id} was not found.`,
           },
         ],
       };
     }
   );
 
-  // Find the next quiz for a subject
   server.registerTool(
     "next_quiz",
     {
-      description: "Find the next upcoming quiz for a subject",
-      inputSchema: {
+      description: "Find the next upcoming quiz for a subject.",
+      inputSchema: z.object({
         subject: z.string(),
-      },
+      }),
     },
     async ({ subject }) => {
       const quiz = db
         .prepare(
-          `SELECT id, title, subject, type, event_date
+          `SELECT *
            FROM events
            WHERE LOWER(subject) = LOWER(?)
-             AND type = 'quiz'
+             AND LOWER(type) = 'quiz'
              AND event_date >= date('now')
            ORDER BY event_date
            LIMIT 1`
         )
         .get(subject);
 
-      if (!quiz) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No upcoming quiz found for ${subject}.`,
-            },
-          ],
-        };
-      }
-
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(quiz),
+            text: JSON.stringify(quiz ?? null),
           },
         ],
       };
     }
   );
 
-  // Add a note
+  // ==================================================
+  // NOTES
+  // ==================================================
+
   server.registerTool(
     "add_note",
     {
-      description: "Save a study note for a subject",
-      inputSchema: {
+      description: "Save a study note for a subject.",
+      inputSchema: z.object({
         title: z.string(),
         subject: z.string(),
         content: z.string(),
-      },
+      }),
     },
     async ({ title, subject, content }) => {
-      const stmt = db.prepare(
-        "INSERT INTO notes (title, subject, content) VALUES (?, ?, ?)"
-      );
-
-      stmt.run(title, subject, content);
+      const result = db
+        .prepare(
+          `INSERT INTO notes
+           (title, subject, content)
+           VALUES (?, ?, ?)`
+        )
+        .run(title, subject, content);
 
       return {
         content: [
           {
             type: "text",
-            text: `Note saved: ${title} (${subject})`,
+            text: `Note saved with id ${result.lastInsertRowid}.`,
           },
         ],
       };
     }
   );
 
-  // List notes
   server.registerTool(
     "list_notes",
     {
-      description: "List study notes, optionally filtered by subject",
-      inputSchema: {
+      description: "List saved notes, optionally filtered by subject.",
+      inputSchema: z.object({
         subject: z.string().optional(),
-      },
+      }),
     },
     async ({ subject }) => {
-      let notes;
-
-      if (subject) {
-        notes = db
-          .prepare(
-            `SELECT id, title, subject, content
-             FROM notes
-             WHERE LOWER(subject) = LOWER(?)
-             ORDER BY id`
-          )
-          .all(subject);
-      } else {
-        notes = db
-          .prepare(
-            `SELECT id, title, subject, content
-             FROM notes
-             ORDER BY id`
-          )
-          .all();
-      }
+      const notes = subject
+        ? db
+            .prepare(
+              `SELECT *
+               FROM notes
+               WHERE LOWER(subject) = LOWER(?)
+               ORDER BY id`
+            )
+            .all(subject)
+        : db
+            .prepare(
+              `SELECT *
+               FROM notes
+               ORDER BY id`
+            )
+            .all();
 
       return {
         content: [
@@ -318,73 +291,65 @@ function createMcpServer() {
     }
   );
 
-  // Delete a note
   server.registerTool(
     "delete_note",
     {
-      description: "Delete a study note by its ID",
-      inputSchema: {
-        id: z.number().int().positive(),
-      },
+      description: "Delete a saved note by id.",
+      inputSchema: z.object({
+        id: z.number(),
+      }),
     },
     async ({ id }) => {
-      const stmt = db.prepare("DELETE FROM notes WHERE id = ?");
-      const result = stmt.run(id);
-
-      if (result.changes === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No note found with ID ${id}.`,
-            },
-          ],
-        };
-      }
+      const result = db
+        .prepare("DELETE FROM notes WHERE id = ?")
+        .run(id);
 
       return {
         content: [
           {
             type: "text",
-            text: `Note ${id} deleted successfully.`,
+            text:
+              result.changes > 0
+                ? `Note ${id} deleted successfully.`
+                : `Note ${id} was not found.`,
           },
         ],
       };
     }
   );
 
-  // Create a study plan
+  // ==================================================
+  // STUDY PLAN
+  // ==================================================
+
   server.registerTool(
     "create_study_plan",
     {
       description:
-        "Create study sessions for a subject based on its next academic deadline, saved notes, and available study times",
-      inputSchema: {
+        "Create a study plan using upcoming assessments, saved notes, and available study times. Earlier quizzes are treated as milestones toward later exams.",
+      inputSchema: z.object({
         subject: z.string(),
-      },
+      }),
     },
     async ({ subject }) => {
-      const assessment = db
+      const assessments = db
         .prepare(
           `SELECT id, title, subject, type, event_date
            FROM events
            WHERE LOWER(subject) = LOWER(?)
-             AND type IN ('quiz', 'exam', 'assignment')
+             AND LOWER(type) IN ('quiz', 'exam', 'assignment')
              AND event_date >= date('now')
-           ORDER BY event_date
-           LIMIT 1`
+           ORDER BY event_date`
         )
-        .get(subject) as
-        | {
-            id: number;
-            title: string;
-            subject: string;
-            type: string;
-            event_date: string;
-          }
-        | undefined;
+        .all(subject) as {
+        id: number;
+        title: string;
+        subject: string;
+        type: string;
+        event_date: string;
+      }[];
 
-      if (!assessment) {
+      if (assessments.length === 0) {
         return {
           content: [
             {
@@ -408,7 +373,7 @@ function createMcpServer() {
         subject: string;
       }[];
 
-      if (assessment.type !== "assignment" && notes.length === 0) {
+      if (notes.length === 0) {
         return {
           content: [
             {
@@ -464,12 +429,14 @@ function createMcpServer() {
         "saturday",
       ];
 
-      const assessmentDate = new Date(
-        `${assessment.event_date}T00:00:00`
-      );
+      const finalAssessment = assessments[assessments.length - 1]!;
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
+
+      const finalAssessmentDate = new Date(
+        `${finalAssessment.event_date}T00:00:00`
+      );
 
       const availableDates: {
         date: string;
@@ -480,7 +447,7 @@ function createMcpServer() {
 
       for (
         let date = new Date(today);
-        date < assessmentDate;
+        date < finalAssessmentDate;
         date.setDate(date.getDate() + 1)
       ) {
         const dateString =
@@ -521,8 +488,8 @@ function createMcpServer() {
         return a.startTime.localeCompare(b.startTime);
       });
 
-      // Assignments need one work session.
-      if (assessment.type === "assignment") {
+      // Assignments need one focused work session.
+      if (finalAssessment.type === "assignment") {
         if (availableDates.length === 0) {
           return {
             content: [
@@ -536,15 +503,13 @@ function createMcpServer() {
 
         const slot = availableDates[0]!;
 
-        const insertSession = db.prepare(
+        db.prepare(
           `INSERT OR IGNORE INTO study_sessions
            (subject, topic, session_date, start_time, end_time)
            VALUES (?, ?, ?, ?, ?)`
-        );
-
-        insertSession.run(
+        ).run(
           subject,
-          assessment.title,
+          finalAssessment.title,
           slot.date,
           slot.startTime,
           slot.endTime
@@ -556,10 +521,12 @@ function createMcpServer() {
               type: "text",
               text: JSON.stringify({
                 subject,
-                nextAssessment: assessment,
+                milestones: assessments,
+                finalAssessment,
                 sessions: [
                   {
-                    topic: assessment.title,
+                    topic: finalAssessment.title,
+                    purpose: "assignment",
                     date: slot.date,
                     day: slot.day,
                     startTime: slot.startTime,
@@ -572,19 +539,27 @@ function createMcpServer() {
         };
       }
 
-      // Quizzes and exams get one session per note.
-      const selectedDates = availableDates.slice(0, notes.length);
+      /*
+       * Quizzes and exams are treated as milestones
+       * in one continuous study plan.
+       */
+      const firstQuiz = assessments.find(
+        (assessment) => assessment.type === "quiz"
+      );
 
-      if (selectedDates.length < notes.length) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Not enough available study slots before the ${assessment.type}. You need ${notes.length} available session(s), but only found ${selectedDates.length}.`,
-            },
-          ],
-        };
-      }
+      const sessions: {
+        topic: string;
+        purpose: string;
+        date: string;
+        day: string;
+        startTime: string;
+        endTime: string;
+      }[] = [];
+
+      const sessionCount = Math.min(
+        availableDates.length,
+        Math.max(notes.length, 1)
+      );
 
       const insertSession = db.prepare(
         `INSERT OR IGNORE INTO study_sessions
@@ -592,8 +567,17 @@ function createMcpServer() {
          VALUES (?, ?, ?, ?, ?)`
       );
 
-      const sessions = notes.map((note, index) => {
-        const slot = selectedDates[index]!;
+      for (let i = 0; i < sessionCount; i++) {
+        const slot = availableDates[i]!;
+        const note = notes[i % notes.length]!;
+
+        const isBeforeQuiz =
+          firstQuiz !== undefined &&
+          slot.date < firstQuiz.event_date;
+
+        const purpose = isBeforeQuiz
+          ? `Prepare for ${firstQuiz.title}`
+          : `Prepare for ${finalAssessment.title}`;
 
         insertSession.run(
           subject,
@@ -603,14 +587,15 @@ function createMcpServer() {
           slot.endTime
         );
 
-        return {
+        sessions.push({
           topic: note.title,
+          purpose,
           date: slot.date,
           day: slot.day,
           startTime: slot.startTime,
           endTime: slot.endTime,
-        };
-      });
+        });
+      }
 
       return {
         content: [
@@ -618,8 +603,14 @@ function createMcpServer() {
             type: "text",
             text: JSON.stringify({
               subject,
-              nextAssessment: assessment,
+              milestones: assessments,
+              finalAssessment,
               sessions,
+              planningSummary: {
+                totalAvailableSlots: availableDates.length,
+                sessionsCreated: sessions.length,
+                firstQuiz: firstQuiz ?? null,
+              },
             }),
           },
         ],
@@ -627,18 +618,21 @@ function createMcpServer() {
     }
   );
 
-  // Add a study session manually
+  // ==================================================
+  // STUDY SESSIONS
+  // ==================================================
+
   server.registerTool(
     "add_study_session",
     {
-      description: "Add a study session to the schedule",
-      inputSchema: {
+      description: "Add a study session manually.",
+      inputSchema: z.object({
         subject: z.string(),
         topic: z.string(),
         sessionDate: z.string(),
         startTime: z.string(),
         endTime: z.string(),
-      },
+      }),
     },
     async ({
       subject,
@@ -647,73 +641,60 @@ function createMcpServer() {
       startTime,
       endTime,
     }) => {
-      const stmt = db.prepare(
-        `INSERT OR IGNORE INTO study_sessions
-         (subject, topic, session_date, start_time, end_time)
-         VALUES (?, ?, ?, ?, ?)`
-      );
-
-      const result = stmt.run(
-        subject,
-        topic,
-        sessionDate,
-        startTime,
-        endTime
-      );
-
-      if (result.changes === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `A study session for ${subject} - ${topic} on ${sessionDate} already exists.`,
-            },
-          ],
-        };
-      }
+      const result = db
+        .prepare(
+          `INSERT OR IGNORE INTO study_sessions
+           (subject, topic, session_date, start_time, end_time)
+           VALUES (?, ?, ?, ?, ?)`
+        )
+        .run(
+          subject,
+          topic,
+          sessionDate,
+          startTime,
+          endTime
+        );
 
       return {
         content: [
           {
             type: "text",
-            text: `Study session added: ${subject} - ${topic} on ${sessionDate} ${startTime}-${endTime}`,
+            text:
+              result.changes > 0
+                ? `Study session created for ${subject}: ${topic} on ${sessionDate} from ${startTime} to ${endTime}.`
+                : `That study session already exists.`,
           },
         ],
       };
     }
   );
 
-  // List study sessions
   server.registerTool(
     "list_study_sessions",
     {
       description:
-        "List scheduled study sessions, optionally filtered by subject",
-      inputSchema: {
+        "List study sessions, optionally filtered by subject.",
+      inputSchema: z.object({
         subject: z.string().optional(),
-      },
+      }),
     },
     async ({ subject }) => {
-      let sessions;
-
-      if (subject) {
-        sessions = db
-          .prepare(
-            `SELECT id, subject, topic, session_date, start_time, end_time
-             FROM study_sessions
-             WHERE LOWER(subject) = LOWER(?)
-             ORDER BY session_date, start_time`
-          )
-          .all(subject);
-      } else {
-        sessions = db
-          .prepare(
-            `SELECT id, subject, topic, session_date, start_time, end_time
-             FROM study_sessions
-             ORDER BY session_date, start_time`
-          )
-          .all();
-      }
+      const sessions = subject
+        ? db
+            .prepare(
+              `SELECT *
+               FROM study_sessions
+               WHERE LOWER(subject) = LOWER(?)
+               ORDER BY session_date, start_time`
+            )
+            .all(subject)
+        : db
+            .prepare(
+              `SELECT *
+               FROM study_sessions
+               ORDER BY session_date, start_time`
+            )
+            .all();
 
       return {
         content: [
@@ -726,105 +707,84 @@ function createMcpServer() {
     }
   );
 
-  // Delete a study session
   server.registerTool(
     "delete_study_session",
     {
-      description: "Delete a scheduled study session by its ID",
-      inputSchema: {
-        id: z.number().int().positive(),
-      },
+      description: "Delete a study session by id.",
+      inputSchema: z.object({
+        id: z.number(),
+      }),
     },
     async ({ id }) => {
-      const stmt = db.prepare(
-        "DELETE FROM study_sessions WHERE id = ?"
-      );
-
-      const result = stmt.run(id);
-
-      if (result.changes === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No study session found with ID ${id}.`,
-            },
-          ],
-        };
-      }
+      const result = db
+        .prepare("DELETE FROM study_sessions WHERE id = ?")
+        .run(id);
 
       return {
         content: [
           {
             type: "text",
-            text: `Study session ${id} deleted successfully.`,
+            text:
+              result.changes > 0
+                ? `Study session ${id} deleted successfully.`
+                : `Study session ${id} was not found.`,
           },
         ],
       };
     }
   );
 
-  // Add available study time
+  // ==================================================
+  // AVAILABILITY
+  // ==================================================
+
   server.registerTool(
     "add_availability",
     {
       description:
-        "Save a study availability slot. Multiple slots can be added for the same day.",
-      inputSchema: {
-        day: z.enum([
-          "monday",
-          "tuesday",
-          "wednesday",
-          "thursday",
-          "friday",
-          "saturday",
-          "sunday",
-        ]),
+        "Add a study availability slot for a day of the week.",
+      inputSchema: z.object({
+        day: z.string(),
         startTime: z.string(),
         endTime: z.string(),
-      },
+      }),
     },
     async ({ day, startTime, endTime }) => {
-      const stmt = db.prepare(
-        `INSERT INTO availability (day, start_time, end_time)
-         VALUES (?, ?, ?)`
-      );
-
-      stmt.run(day, startTime, endTime);
+      const result = db
+        .prepare(
+          `INSERT INTO availability
+           (day, start_time, end_time)
+           VALUES (?, ?, ?)`
+        )
+        .run(
+          day.toLowerCase(),
+          startTime,
+          endTime
+        );
 
       return {
         content: [
           {
             type: "text",
-            text: `Availability saved: ${day} ${startTime}-${endTime}`,
+            text: `Availability added with id ${result.lastInsertRowid}.`,
           },
         ],
       };
     }
   );
 
-  // List available study time
   server.registerTool(
     "list_availability",
     {
-      description: "List all of the user's available study times",
+      description: "List all saved study availability slots.",
+      inputSchema: z.object({}),
     },
     async () => {
       const availability = db
         .prepare(
-          `SELECT id, day, start_time, end_time
+          `SELECT *
            FROM availability
-           ORDER BY
-             CASE LOWER(day)
-               WHEN 'monday' THEN 1
-               WHEN 'tuesday' THEN 2
-               WHEN 'wednesday' THEN 3
-               WHEN 'thursday' THEN 4
-               WHEN 'friday' THEN 5
-               WHEN 'saturday' THEN 6
-               WHEN 'sunday' THEN 7
-             END,
-             start_time`
+           ORDER BY id`
         )
         .all();
 
@@ -839,53 +799,45 @@ function createMcpServer() {
     }
   );
 
-  // Delete an availability slot
   server.registerTool(
     "delete_availability",
     {
-      description: "Delete a study availability slot by its ID",
-      inputSchema: {
-        id: z.number().int().positive(),
-      },
+      description: "Delete a study availability slot by id.",
+      inputSchema: z.object({
+        id: z.number(),
+      }),
     },
     async ({ id }) => {
-      const stmt = db.prepare(
-        "DELETE FROM availability WHERE id = ?"
-      );
-
-      const result = stmt.run(id);
-
-      if (result.changes === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No availability slot found with ID ${id}.`,
-            },
-          ],
-        };
-      }
+      const result = db
+        .prepare("DELETE FROM availability WHERE id = ?")
+        .run(id);
 
       return {
         content: [
           {
             type: "text",
-            text: `Availability slot ${id} deleted successfully.`,
+            text:
+              result.changes > 0
+                ? `Availability ${id} deleted successfully.`
+                : `Availability ${id} was not found.`,
           },
         ],
       };
     }
   );
 
-  // Reset the entire StudyMate database
+  // ==================================================
+  // RESET DATABASE
+  // ==================================================
+
   server.registerTool(
     "reset_database",
     {
       description:
-        "Delete all tasks, events, notes, study sessions, and availability. Requires explicit RESET confirmation.",
-      inputSchema: {
+        "Delete all StudyMate data. Requires the exact confirmation string RESET.",
+      inputSchema: z.object({
         confirmation: z.string(),
-      },
+      }),
     },
     async ({ confirmation }) => {
       if (confirmation !== "RESET") {
@@ -893,27 +845,26 @@ function createMcpServer() {
           content: [
             {
               type: "text",
-              text: "Database reset cancelled. Exact confirmation required: RESET",
+              text:
+                "Database was not reset. Exact confirmation 'RESET' is required.",
             },
           ],
         };
       }
 
-      const resetDatabase = db.transaction(() => {
-        db.prepare("DELETE FROM tasks").run();
-        db.prepare("DELETE FROM events").run();
-        db.prepare("DELETE FROM notes").run();
-        db.prepare("DELETE FROM study_sessions").run();
-        db.prepare("DELETE FROM availability").run();
-      });
-
-      resetDatabase();
+      db.exec(`
+        DELETE FROM tasks;
+        DELETE FROM events;
+        DELETE FROM notes;
+        DELETE FROM study_sessions;
+        DELETE FROM availability;
+      `);
 
       return {
         content: [
           {
             type: "text",
-            text: "StudyMate database reset successfully. All tasks, events, notes, study sessions, and availability were deleted.",
+            text: "StudyMate database reset successfully.",
           },
         ],
       };
@@ -923,26 +874,44 @@ function createMcpServer() {
   return server;
 }
 
+// ==================================================
+// HTTP MCP SERVER
+// ==================================================
+
 const httpServer = createServer(async (req, res) => {
-  if (req.url === "/mcp") {
-    const mcpServer = createMcpServer();
-
-    const transport = new NodeStreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    });
-
-    await mcpServer.connect(transport);
-    await transport.handleRequest(req, res);
-
+  if (req.url !== "/mcp") {
+    res.writeHead(404);
+    res.end("Not Found");
     return;
   }
 
-  res.writeHead(404);
-  res.end("Not Found");
+  // Each MCP connection gets its own server + transport.
+  const server = createMcpServer();
+
+  const transport = new NodeStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  });
+
+  res.on("close", async () => {
+    await transport.close();
+    await server.close();
+  });
+
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res);
+  } catch (error) {
+    console.error("MCP request error:", error);
+
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end("Internal Server Error");
+    }
+  }
 });
 
 httpServer.listen(3000, () => {
   console.log(
-    "StudyMate MCP server running on http://localhost:3000/mcp"
+    "StudyMate MCP server running at http://localhost:3000/mcp"
   );
 });
