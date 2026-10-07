@@ -288,7 +288,7 @@ function createMcpServer() {
     "create_study_plan",
     {
       description:
-        "Create study sessions for a subject based on its next quiz and saved notes",
+        "Create study sessions for a subject based on its next quiz, saved notes, and available study times",
       inputSchema: {
         subject: z.string(),
       },
@@ -349,16 +349,107 @@ function createMcpServer() {
         };
       }
 
-      const sessions = notes.map((note, index) => {
-        const taskTitle = `Study ${subject}: ${note.title}`;
+      const availability = db
+        .prepare(
+          `SELECT id, day, start_time, end_time
+           FROM availability
+           ORDER BY id`
+        )
+        .all() as {
+        id: number;
+        day: string;
+        start_time: string;
+        end_time: string;
+      }[];
 
-        const stmt = db.prepare(
-          "INSERT INTO tasks (title, due_date) VALUES (?, ?)"
+      if (availability.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No study availability found. Add your available study times before creating a study plan.`,
+            },
+          ],
+        };
+      }
+
+      const dayNames = [
+        "sunday",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+      ];
+
+      const quizDate = new Date(`${quiz.event_date}T00:00:00`);
+
+      const availableDates: {
+        date: string;
+        day: string;
+        startTime: string;
+        endTime: string;
+      }[] = [];
+
+      // Look backwards from the quiz date and find available study days.
+      for (
+        let offset = 1;
+        offset <= 30 && availableDates.length < notes.length;
+        offset++
+      ) {
+        const date = new Date(quizDate);
+        date.setDate(date.getDate() - offset);
+
+        const dateString =
+          `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+        const dayName = dayNames[date.getDay()]!;
+
+        const matchingAvailability = availability.find(
+          (slot) => slot.day.toLowerCase() === dayName
         );
 
-        stmt.run(taskTitle, quiz.event_date);
+        if (matchingAvailability) {
+          availableDates.push({
+            date: dateString,
+            day: dayName,
+            startTime: matchingAvailability.start_time,
+            endTime: matchingAvailability.end_time,
+          });
+        }
+      }
 
-        return taskTitle;
+      if (availableDates.length < notes.length) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Not enough available study days before the quiz. You need ${notes.length} available session(s), but only found ${availableDates.length}.`,
+            },
+          ],
+        };
+      }
+
+      availableDates.reverse();
+
+      const insertSession = db.prepare(
+        `INSERT OR IGNORE INTO study_sessions (subject, topic, session_date)
+         VALUES (?, ?, ?)`
+      );
+
+      const sessions = notes.map((note, index) => {
+        const slot = availableDates[index]!;
+
+        insertSession.run(subject, note.title, slot.date);
+
+        return {
+          topic: note.title,
+          date: slot.date,
+          day: slot.day,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+        };
       });
 
       return {
@@ -370,6 +461,151 @@ function createMcpServer() {
               nextQuiz: quiz,
               sessions,
             }),
+          },
+        ],
+      };
+    }
+  );
+
+  // List study sessions
+  server.registerTool(
+    "list_study_sessions",
+    {
+      description:
+        "List scheduled study sessions, optionally filtered by subject",
+      inputSchema: {
+        subject: z.string().optional(),
+      },
+    },
+    async ({ subject }) => {
+      let sessions;
+
+      if (subject) {
+        sessions = db
+          .prepare(
+            `SELECT id, subject, topic, session_date
+             FROM study_sessions
+             WHERE LOWER(subject) = LOWER(?)
+             ORDER BY session_date`
+          )
+          .all(subject);
+      } else {
+        sessions = db
+          .prepare(
+            `SELECT id, subject, topic, session_date
+             FROM study_sessions
+             ORDER BY session_date`
+          )
+          .all();
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(sessions),
+          },
+        ],
+      };
+    }
+  );
+
+  // Delete a study session
+  server.registerTool(
+    "delete_study_session",
+    {
+      description: "Delete a scheduled study session by its ID",
+      inputSchema: {
+        id: z.number().int().positive(),
+      },
+    },
+    async ({ id }) => {
+      const stmt = db.prepare(
+        "DELETE FROM study_sessions WHERE id = ?"
+      );
+
+      const result = stmt.run(id);
+
+      if (result.changes === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No study session found with ID ${id}.`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Study session ${id} deleted successfully.`,
+          },
+        ],
+      };
+    }
+  );
+
+  // Add available study time
+  server.registerTool(
+    "add_availability",
+    {
+      description: "Save a time period when the user is available to study",
+      inputSchema: {
+        day: z.enum([
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+          "sunday",
+        ]),
+        startTime: z.string(),
+        endTime: z.string(),
+      },
+    },
+    async ({ day, startTime, endTime }) => {
+      const stmt = db.prepare(
+        `INSERT INTO availability (day, start_time, end_time)
+         VALUES (?, ?, ?)`
+      );
+
+      stmt.run(day, startTime, endTime);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Availability saved: ${day} ${startTime}-${endTime}`,
+          },
+        ],
+      };
+    }
+  );
+
+  // List available study time
+  server.registerTool(
+    "list_availability",
+    {
+      description: "List the user's available study times",
+    },
+    async () => {
+      const availability = db
+        .prepare(
+          `SELECT id, day, start_time, end_time
+           FROM availability
+           ORDER BY id`
+        )
+        .all();
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(availability),
           },
         ],
       };
