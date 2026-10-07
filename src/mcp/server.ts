@@ -551,10 +551,6 @@ function createServer() {
         today.getMonth() + 1
       ).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
-      // ==================================================
-      // GET EVENTS
-      // ==================================================
-
       const events = db
         .prepare(
           `SELECT
@@ -576,10 +572,6 @@ function createServer() {
         event_date: string;
       }[];
 
-      // ==================================================
-      // GET NOTES
-      // ==================================================
-
       const notes = db
         .prepare(
           `SELECT
@@ -597,10 +589,6 @@ function createServer() {
         subject: string;
         content: string;
       }[];
-
-      // ==================================================
-      // GET AVAILABILITY
-      // ==================================================
 
       const availability = db
         .prepare(
@@ -667,10 +655,6 @@ function createServer() {
         };
       }
 
-      // ==================================================
-      // FIND ASSESSMENTS
-      // ==================================================
-
       const assessments = events.filter(
         (event) =>
           event.type.toLowerCase() === "quiz" ||
@@ -707,10 +691,6 @@ function createServer() {
         )
       );
 
-      // ==================================================
-      // EXISTING SESSIONS
-      // ==================================================
-
       const existingSessions = db
         .prepare(
           `SELECT
@@ -734,10 +714,6 @@ function createServer() {
         start_time: string;
         end_time: string;
       }[];
-
-      // ==================================================
-      // BACKFILL PURPOSES
-      // ==================================================
 
       for (const session of existingSessions) {
         if (session.purpose !== "Study") {
@@ -794,14 +770,6 @@ function createServer() {
         )
       );
 
-      // ==================================================
-      // WORKLOAD CALCULATION
-      // ==================================================
-
-      // Each saved note gets up to two study sessions.
-      // This prevents the planner from filling every
-      // available day unnecessarily.
-
       const targetSessionCount = Math.max(
         notes.length * 2,
         1
@@ -814,10 +782,6 @@ function createServer() {
         targetSessionCount - existingSessionCount,
         0
       );
-
-      // ==================================================
-      // FIND AVAILABLE DATES
-      // ==================================================
 
       const dayMap: Record<string, number> = {
         sunday: 0,
@@ -862,9 +826,6 @@ function createServer() {
           current.getDate()
         ).padStart(2, "0")}`;
 
-        // Never schedule on an assessment date.
-        // Never create more than one StudyMate session per day.
-
         if (
           !existingSessionDates.has(dateString) &&
           !assessmentDates.has(dateString) &&
@@ -883,10 +844,6 @@ function createServer() {
 
         current.setDate(current.getDate() + 1);
       }
-
-      // ==================================================
-      // CREATE SESSIONS
-      // ==================================================
 
       let sessionsCreated = 0;
 
@@ -934,10 +891,6 @@ function createServer() {
         }
       }
 
-      // ==================================================
-      // RETURN COMPLETE PLAN
-      // ==================================================
-
       const finalSessions = db
         .prepare(
           `SELECT
@@ -979,7 +932,179 @@ function createServer() {
   );
 
   // ==================================================
-  // STUDY SESSION MANAGEMENT
+  // FIND AVAILABLE STUDY SLOT
+  // ==================================================
+
+  server.registerTool(
+    "find_available_study_slot",
+    {
+      description:
+        "Find the next available study slot for a subject while avoiding existing study sessions and quiz or exam dates.",
+      inputSchema: z.object({
+        subject: z.string(),
+        from_date: z.string().optional(),
+      }),
+    },
+    async ({ subject, from_date }) => {
+      const startDate = from_date
+        ? new Date(`${from_date}T00:00:00`)
+        : new Date();
+
+      startDate.setHours(0, 0, 0, 0);
+
+      const availability = db
+        .prepare(
+          `SELECT
+             id,
+             day,
+             start_time,
+             end_time
+           FROM availability
+           ORDER BY id`
+        )
+        .all() as {
+        id: number;
+        day: string;
+        start_time: string;
+        end_time: string;
+      }[];
+
+      if (availability.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                found: false,
+                message:
+                  "No study availability has been saved.",
+              }),
+            },
+          ],
+        };
+      }
+
+      const events = db
+        .prepare(
+          `SELECT
+             id,
+             title,
+             type,
+             event_date
+           FROM events
+           WHERE LOWER(subject) = LOWER(?)
+             AND LOWER(type) IN ('quiz', 'exam')
+           ORDER BY event_date`
+        )
+        .all(subject) as {
+        id: number;
+        title: string;
+        type: string;
+        event_date: string;
+      }[];
+
+      const assessmentDates = new Set(
+        events.map((event) => event.event_date)
+      );
+
+      const existingSessions = db
+        .prepare(
+          `SELECT
+             session_date,
+             start_time,
+             end_time
+           FROM study_sessions
+           WHERE LOWER(subject) = LOWER(?)`
+        )
+        .all(subject) as {
+        session_date: string;
+        start_time: string;
+        end_time: string;
+      }[];
+
+      const existingSessionDates = new Set(
+        existingSessions.map(
+          (session) => session.session_date
+        )
+      );
+
+      const dayMap: Record<string, number> = {
+        sunday: 0,
+        monday: 1,
+        tuesday: 2,
+        wednesday: 3,
+        thursday: 4,
+        friday: 5,
+        saturday: 6,
+      };
+
+      // Search the next 30 days.
+      for (let i = 0; i < 30; i++) {
+        const current = new Date(startDate);
+        current.setDate(current.getDate() + i);
+
+        const dateString = `${current.getFullYear()}-${String(
+          current.getMonth() + 1
+        ).padStart(2, "0")}-${String(
+          current.getDate()
+        ).padStart(2, "0")}`;
+
+        // Never recommend an assessment date.
+        if (assessmentDates.has(dateString)) {
+          continue;
+        }
+
+        // Don't recommend a day already containing a session.
+        if (existingSessionDates.has(dateString)) {
+          continue;
+        }
+
+        const matchingSlot = availability
+          .filter(
+            (slot) =>
+              dayMap[slot.day.toLowerCase()] ===
+              current.getDay()
+          )
+          .sort((a, b) =>
+            a.start_time.localeCompare(b.start_time)
+          )[0];
+
+        if (matchingSlot) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  found: true,
+                  slot: {
+                    date: dateString,
+                    start_time: matchingSlot.start_time,
+                    end_time: matchingSlot.end_time,
+                  },
+                }),
+              },
+            ],
+          };
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              found: false,
+              message:
+                "No suitable study slot was found in the next 30 days.",
+            }),
+          },
+        ],
+      };
+    }
+  );
+
+  // ==================================================
+  // ADD STUDY SESSION
   // ==================================================
 
   server.registerTool(
@@ -1107,8 +1232,10 @@ function createServer() {
       const newDate = session_date ?? existing.session_date;
       const newStartTime =
         start_time ?? existing.start_time;
-      const newEndTime = end_time ?? existing.end_time;
-      const newPurpose = purpose ?? existing.purpose;
+      const newEndTime =
+        end_time ?? existing.end_time;
+      const newPurpose =
+        purpose ?? existing.purpose;
 
       // Never move a study session onto an academic assessment date.
       const conflictingEvent = db
@@ -1200,6 +1327,10 @@ function createServer() {
     }
   );
 
+  // ==================================================
+  // LIST STUDY SESSIONS
+  // ==================================================
+
   server.registerTool(
     "list_study_sessions",
     {
@@ -1236,6 +1367,10 @@ function createServer() {
       };
     }
   );
+
+  // ==================================================
+  // DELETE STUDY SESSION
+  // ==================================================
 
   server.registerTool(
     "delete_study_session",
