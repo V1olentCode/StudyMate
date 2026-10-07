@@ -7,7 +7,22 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     due_date TEXT
-  )
+  );
+
+  CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    type TEXT NOT NULL,
+    event_date TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    content TEXT NOT NULL
+  );
 `);
 
 export default db;
