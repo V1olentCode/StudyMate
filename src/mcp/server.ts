@@ -385,6 +385,10 @@ function createMcpServer() {
 
       const quizDate = new Date(`${quiz.event_date}T00:00:00`);
 
+      // Start from today instead of looking 30 days into the past.
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
       const availableDates: {
         date: string;
         day: string;
@@ -392,56 +396,72 @@ function createMcpServer() {
         endTime: string;
       }[] = [];
 
-      // Look backwards from the quiz date and find available study days.
+      // Look from today up to the day before the quiz.
       for (
-        let offset = 1;
-        offset <= 30 && availableDates.length < notes.length;
-        offset++
+        let date = new Date(today);
+        date < quizDate;
+        date.setDate(date.getDate() + 1)
       ) {
-        const date = new Date(quizDate);
-        date.setDate(date.getDate() - offset);
-
         const dateString =
           `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 
         const dayName = dayNames[date.getDay()]!;
 
-        const matchingAvailability = availability.find(
+        const matchingAvailability = availability.filter(
           (slot) => slot.day.toLowerCase() === dayName
         );
 
-        if (matchingAvailability) {
+        for (const slot of matchingAvailability) {
           availableDates.push({
             date: dateString,
             day: dayName,
-            startTime: matchingAvailability.start_time,
-            endTime: matchingAvailability.end_time,
+            startTime: slot.start_time,
+            endTime: slot.end_time,
           });
         }
       }
 
-      if (availableDates.length < notes.length) {
+      // Slots are already chronological because we iterate from today
+      // to the quiz date, but sort again by time for same-day slots.
+      availableDates.sort((a, b) => {
+        const dateComparison = a.date.localeCompare(b.date);
+
+        if (dateComparison !== 0) {
+          return dateComparison;
+        }
+
+        return a.startTime.localeCompare(b.startTime);
+      });
+
+      const selectedDates = availableDates.slice(0, notes.length);
+
+      if (selectedDates.length < notes.length) {
         return {
           content: [
             {
               type: "text",
-              text: `Not enough available study days before the quiz. You need ${notes.length} available session(s), but only found ${availableDates.length}.`,
+              text: `Not enough available study slots before the quiz. You need ${notes.length} available session(s), but only found ${selectedDates.length}.`,
             },
           ],
         };
       }
 
-      availableDates.reverse();
-
       const insertSession = db.prepare(
-        `INSERT OR IGNORE INTO study_sessions (subject, topic, session_date)
-         VALUES (?, ?, ?)`
+        `INSERT OR IGNORE INTO study_sessions
+         (subject, topic, session_date, start_time, end_time)
+         VALUES (?, ?, ?, ?, ?)`
       );
 
       const sessions = notes.map((note, index) => {
-        const slot = availableDates[index]!;
+        const slot = selectedDates[index]!;
 
-        insertSession.run(subject, note.title, slot.date);
+        insertSession.run(
+          subject,
+          note.title,
+          slot.date,
+          slot.startTime,
+          slot.endTime
+        );
 
         return {
           topic: note.title,
@@ -483,18 +503,18 @@ function createMcpServer() {
       if (subject) {
         sessions = db
           .prepare(
-            `SELECT id, subject, topic, session_date
+            `SELECT id, subject, topic, session_date, start_time, end_time
              FROM study_sessions
              WHERE LOWER(subject) = LOWER(?)
-             ORDER BY session_date`
+             ORDER BY session_date, start_time`
           )
           .all(subject);
       } else {
         sessions = db
           .prepare(
-            `SELECT id, subject, topic, session_date
+            `SELECT id, subject, topic, session_date, start_time, end_time
              FROM study_sessions
-             ORDER BY session_date`
+             ORDER BY session_date, start_time`
           )
           .all();
       }
@@ -552,7 +572,8 @@ function createMcpServer() {
   server.registerTool(
     "add_availability",
     {
-      description: "Save a time period when the user is available to study",
+      description:
+        "Save a study availability slot. Multiple slots can be added for the same day.",
       inputSchema: {
         day: z.enum([
           "monday",
@@ -590,14 +611,24 @@ function createMcpServer() {
   server.registerTool(
     "list_availability",
     {
-      description: "List the user's available study times",
+      description: "List all of the user's available study times",
     },
     async () => {
       const availability = db
         .prepare(
           `SELECT id, day, start_time, end_time
            FROM availability
-           ORDER BY id`
+           ORDER BY
+             CASE LOWER(day)
+               WHEN 'monday' THEN 1
+               WHEN 'tuesday' THEN 2
+               WHEN 'wednesday' THEN 3
+               WHEN 'thursday' THEN 4
+               WHEN 'friday' THEN 5
+               WHEN 'saturday' THEN 6
+               WHEN 'sunday' THEN 7
+             END,
+             start_time`
         )
         .all();
 
@@ -606,6 +637,44 @@ function createMcpServer() {
           {
             type: "text",
             text: JSON.stringify(availability),
+          },
+        ],
+      };
+    }
+  );
+
+  // Delete an availability slot
+  server.registerTool(
+    "delete_availability",
+    {
+      description: "Delete a study availability slot by its ID",
+      inputSchema: {
+        id: z.number().int().positive(),
+      },
+    },
+    async ({ id }) => {
+      const stmt = db.prepare(
+        "DELETE FROM availability WHERE id = ?"
+      );
+
+      const result = stmt.run(id);
+
+      if (result.changes === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No availability slot found with ID ${id}.`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Availability slot ${id} deleted successfully.`,
           },
         ],
       };

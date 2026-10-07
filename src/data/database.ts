@@ -28,7 +28,9 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     subject TEXT NOT NULL,
     topic TEXT NOT NULL,
-    session_date TEXT NOT NULL
+    session_date TEXT NOT NULL,
+    start_time TEXT NOT NULL DEFAULT '00:00',
+    end_time TEXT NOT NULL DEFAULT '00:00'
   );
 
   CREATE TABLE IF NOT EXISTS availability (
@@ -38,6 +40,27 @@ db.exec(`
     end_time TEXT NOT NULL
   );
 `);
+
+// Add time columns if this database was created with the older schema.
+const studySessionColumns = db
+  .prepare("PRAGMA table_info(study_sessions)")
+  .all() as { name: string }[];
+
+const columnNames = new Set(studySessionColumns.map((column) => column.name));
+
+if (!columnNames.has("start_time")) {
+  db.exec(`
+    ALTER TABLE study_sessions
+    ADD COLUMN start_time TEXT NOT NULL DEFAULT '00:00'
+  `);
+}
+
+if (!columnNames.has("end_time")) {
+  db.exec(`
+    ALTER TABLE study_sessions
+    ADD COLUMN end_time TEXT NOT NULL DEFAULT '00:00'
+  `);
+}
 
 // Remove duplicate study sessions from earlier tests.
 db.exec(`
