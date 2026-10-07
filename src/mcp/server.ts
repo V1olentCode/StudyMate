@@ -10,8 +10,9 @@ function createMcpServer() {
     version: "1.0.0",
   });
 
+  // Add a task
   server.registerTool(
-      "add_task",
+    "add_task",
     {
       description: "Add a study task for the user",
       inputSchema: {
@@ -31,6 +32,63 @@ function createMcpServer() {
           {
             type: "text",
             text: `Task saved: ${title}${dueDate ? ` (due ${dueDate})` : ""}`,
+          },
+        ],
+      };
+    }
+  );
+
+  // List all tasks
+  server.registerTool(
+    "list_tasks",
+    {
+      description: "List all study tasks",
+    },
+    async () => {
+      const tasks = db
+        .prepare("SELECT id, title, due_date FROM tasks ORDER BY id")
+        .all();
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(tasks),
+          },
+        ],
+      };
+    }
+  );
+
+  // Delete a task
+  server.registerTool(
+    "delete_task",
+    {
+      description: "Delete a study task by its ID",
+      inputSchema: {
+        id: z.number().int().positive(),
+      },
+    },
+    async ({ id }) => {
+      const stmt = db.prepare("DELETE FROM tasks WHERE id = ?");
+      const result = stmt.run(id);
+
+      if (result.changes === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No task found with ID ${id}.`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Task ${id} deleted successfully.`,
           },
         ],
       };
