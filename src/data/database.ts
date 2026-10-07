@@ -28,6 +28,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     subject TEXT NOT NULL,
     topic TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT 'Study',
     session_date TEXT NOT NULL,
     start_time TEXT NOT NULL DEFAULT '00:00',
     end_time TEXT NOT NULL DEFAULT '00:00'
@@ -41,12 +42,17 @@ db.exec(`
   );
 `);
 
-// Add time columns if this database was created with the older schema.
+// ==================================================
+// MIGRATION FOR OLDER STUDY SESSION SCHEMA
+// ==================================================
+
 const studySessionColumns = db
   .prepare("PRAGMA table_info(study_sessions)")
   .all() as { name: string }[];
 
-const columnNames = new Set(studySessionColumns.map((column) => column.name));
+const columnNames = new Set(
+  studySessionColumns.map((column) => column.name)
+);
 
 if (!columnNames.has("start_time")) {
   db.exec(`
@@ -62,7 +68,17 @@ if (!columnNames.has("end_time")) {
   `);
 }
 
-// Remove duplicate study sessions from earlier tests.
+if (!columnNames.has("purpose")) {
+  db.exec(`
+    ALTER TABLE study_sessions
+    ADD COLUMN purpose TEXT NOT NULL DEFAULT 'Study'
+  `);
+}
+
+// ==================================================
+// REMOVE DUPLICATE STUDY SESSIONS
+// ==================================================
+
 db.exec(`
   DELETE FROM study_sessions
   WHERE id NOT IN (
@@ -72,7 +88,10 @@ db.exec(`
   );
 `);
 
-// Add duplicate protection to the existing table.
+// ==================================================
+// UNIQUE STUDY SESSION PROTECTION
+// ==================================================
+
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS
   idx_unique_study_session

@@ -1,10 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { z } from "zod";
-import { createServer } from "node:http";
+import * as httpServer from "node:http";
 import db from "../data/database.js";
 
-function createMcpServer() {
+// ==================================================
+// CREATE MCP SERVER
+// ==================================================
+
+function createServer() {
   const server = new McpServer({
     name: "StudyMate",
     version: "1.0.0",
@@ -17,24 +21,29 @@ function createMcpServer() {
   server.registerTool(
     "add_task",
     {
-      description: "Add a study task.",
+      description: "Add a task with an optional due date.",
       inputSchema: z.object({
         title: z.string(),
-        dueDate: z.string().optional(),
+        due_date: z.string().optional(),
       }),
     },
-    async ({ title, dueDate }) => {
+    async ({ title, due_date }) => {
       const result = db
         .prepare(
-          "INSERT INTO tasks (title, due_date) VALUES (?, ?)"
+          `INSERT INTO tasks (title, due_date)
+           VALUES (?, ?)`
         )
-        .run(title, dueDate ?? null);
+        .run(title, due_date ?? null);
 
       return {
         content: [
           {
             type: "text",
-            text: `Task added with id ${result.lastInsertRowid}.`,
+            text: JSON.stringify({
+              id: result.lastInsertRowid,
+              title,
+              due_date: due_date ?? null,
+            }),
           },
         ],
       };
@@ -44,12 +53,16 @@ function createMcpServer() {
   server.registerTool(
     "list_tasks",
     {
-      description: "List all study tasks.",
+      description: "List all saved tasks.",
       inputSchema: z.object({}),
     },
     async () => {
       const tasks = db
-        .prepare("SELECT * FROM tasks ORDER BY id")
+        .prepare(
+          `SELECT id, title, due_date
+           FROM tasks
+           ORDER BY due_date`
+        )
         .all();
 
       return {
@@ -66,7 +79,7 @@ function createMcpServer() {
   server.registerTool(
     "delete_task",
     {
-      description: "Delete a study task by id.",
+      description: "Delete a task by ID.",
       inputSchema: z.object({
         id: z.number(),
       }),
@@ -80,10 +93,10 @@ function createMcpServer() {
         content: [
           {
             type: "text",
-            text:
-              result.changes > 0
-                ? `Task ${id} deleted successfully.`
-                : `Task ${id} was not found.`,
+            text: JSON.stringify({
+              deleted: result.changes > 0,
+              id,
+            }),
           },
         ],
       };
@@ -91,7 +104,7 @@ function createMcpServer() {
   );
 
   // ==================================================
-  // ACADEMIC EVENTS
+  // EVENTS
   // ==================================================
 
   server.registerTool(
@@ -103,21 +116,29 @@ function createMcpServer() {
         title: z.string(),
         subject: z.string(),
         type: z.string(),
-        eventDate: z.string(),
+        event_date: z.string(),
       }),
     },
-    async ({ title, subject, type, eventDate }) => {
-      db.prepare(
-        `INSERT INTO events
-         (title, subject, type, event_date)
-         VALUES (?, ?, ?, ?)`
-      ).run(title, subject, type, eventDate);
+    async ({ title, subject, type, event_date }) => {
+      const result = db
+        .prepare(
+          `INSERT INTO events
+           (title, subject, type, event_date)
+           VALUES (?, ?, ?, ?)`
+        )
+        .run(title, subject, type, event_date);
 
       return {
         content: [
           {
             type: "text",
-            text: `Event saved: ${title} (${subject}, ${type}, ${eventDate})`,
+            text: JSON.stringify({
+              id: result.lastInsertRowid,
+              title,
+              subject,
+              type,
+              event_date,
+            }),
           },
         ],
       };
@@ -127,28 +148,22 @@ function createMcpServer() {
   server.registerTool(
     "list_events",
     {
-      description: "List academic events, optionally filtered by subject.",
-      inputSchema: z.object({
-        subject: z.string().optional(),
-      }),
+      description: "List all academic events.",
+      inputSchema: z.object({}),
     },
-    async ({ subject }) => {
-      const events = subject
-        ? db
-            .prepare(
-              `SELECT *
-               FROM events
-               WHERE LOWER(subject) = LOWER(?)
-               ORDER BY event_date`
-            )
-            .all(subject)
-        : db
-            .prepare(
-              `SELECT *
-               FROM events
-               ORDER BY event_date`
-            )
-            .all();
+    async () => {
+      const events = db
+        .prepare(
+          `SELECT
+             id,
+             title,
+             subject,
+             type,
+             event_date
+           FROM events
+           ORDER BY event_date`
+        )
+        .all();
 
       return {
         content: [
@@ -164,7 +179,7 @@ function createMcpServer() {
   server.registerTool(
     "delete_event",
     {
-      description: "Delete an academic event by id.",
+      description: "Delete an academic event by ID.",
       inputSchema: z.object({
         id: z.number(),
       }),
@@ -178,15 +193,19 @@ function createMcpServer() {
         content: [
           {
             type: "text",
-            text:
-              result.changes > 0
-                ? `Event ${id} deleted successfully.`
-                : `Event ${id} was not found.`,
+            text: JSON.stringify({
+              deleted: result.changes > 0,
+              id,
+            }),
           },
         ],
       };
     }
   );
+
+  // ==================================================
+  // NEXT QUIZ
+  // ==================================================
 
   server.registerTool(
     "next_quiz",
@@ -197,17 +216,28 @@ function createMcpServer() {
       }),
     },
     async ({ subject }) => {
+      const today = new Date();
+
+      const todayString = `${today.getFullYear()}-${String(
+        today.getMonth() + 1
+      ).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
       const quiz = db
         .prepare(
-          `SELECT *
+          `SELECT
+             id,
+             title,
+             subject,
+             type,
+             event_date
            FROM events
            WHERE LOWER(subject) = LOWER(?)
              AND LOWER(type) = 'quiz'
-             AND event_date >= date('now')
+             AND event_date >= ?
            ORDER BY event_date
            LIMIT 1`
         )
-        .get(subject);
+        .get(subject, todayString);
 
       return {
         content: [
@@ -247,7 +277,12 @@ function createMcpServer() {
         content: [
           {
             type: "text",
-            text: `Note saved with id ${result.lastInsertRowid}.`,
+            text: JSON.stringify({
+              id: result.lastInsertRowid,
+              title,
+              subject,
+              content,
+            }),
           },
         ],
       };
@@ -257,7 +292,8 @@ function createMcpServer() {
   server.registerTool(
     "list_notes",
     {
-      description: "List saved notes, optionally filtered by subject.",
+      description:
+        "List saved study notes, optionally filtered by subject.",
       inputSchema: z.object({
         subject: z.string().optional(),
       }),
@@ -266,7 +302,11 @@ function createMcpServer() {
       const notes = subject
         ? db
             .prepare(
-              `SELECT *
+              `SELECT
+                 id,
+                 title,
+                 subject,
+                 content
                FROM notes
                WHERE LOWER(subject) = LOWER(?)
                ORDER BY id`
@@ -274,7 +314,11 @@ function createMcpServer() {
             .all(subject)
         : db
             .prepare(
-              `SELECT *
+              `SELECT
+                 id,
+                 title,
+                 subject,
+                 content
                FROM notes
                ORDER BY id`
             )
@@ -294,7 +338,7 @@ function createMcpServer() {
   server.registerTool(
     "delete_note",
     {
-      description: "Delete a saved note by id.",
+      description: "Delete a saved note by ID.",
       inputSchema: z.object({
         id: z.number(),
       }),
@@ -308,10 +352,179 @@ function createMcpServer() {
         content: [
           {
             type: "text",
-            text:
-              result.changes > 0
-                ? `Note ${id} deleted successfully.`
-                : `Note ${id} was not found.`,
+            text: JSON.stringify({
+              deleted: result.changes > 0,
+              id,
+            }),
+          },
+        ],
+      };
+    }
+  );
+
+  // ==================================================
+  // TODAY'S STUDY
+  // ==================================================
+
+  server.registerTool(
+    "today_study",
+    {
+      description:
+        "Show today's scheduled study sessions and the saved notes relevant to them.",
+      inputSchema: z.object({}),
+    },
+    async () => {
+      const today = new Date();
+
+      const todayString = `${today.getFullYear()}-${String(
+        today.getMonth() + 1
+      ).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+      const sessions = db
+        .prepare(
+          `SELECT
+             id,
+             subject,
+             topic,
+             purpose,
+             session_date,
+             start_time,
+             end_time
+           FROM study_sessions
+           WHERE session_date = ?
+           ORDER BY start_time`
+        )
+        .all(todayString) as {
+        id: number;
+        subject: string;
+        topic: string;
+        purpose: string;
+        session_date: string;
+        start_time: string;
+        end_time: string;
+      }[];
+
+      if (sessions.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                date: todayString,
+                sessions: [],
+                message:
+                  "No study sessions are scheduled for today.",
+              }),
+            },
+          ],
+        };
+      }
+
+      const sessionsWithNotes = sessions.map((session) => {
+        const notes = db
+          .prepare(
+            `SELECT
+               id,
+               title,
+               subject,
+               content
+             FROM notes
+             WHERE LOWER(subject) = LOWER(?)
+             ORDER BY id`
+          )
+          .all(session.subject);
+
+        return {
+          ...session,
+          notes,
+        };
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              date: todayString,
+              sessions: sessionsWithNotes,
+            }),
+          },
+        ],
+      };
+    }
+  );
+
+  // ==================================================
+  // UPCOMING
+  // ==================================================
+
+  server.registerTool(
+    "upcoming",
+    {
+      description:
+        "Show upcoming academic events, tasks, and study sessions.",
+      inputSchema: z.object({}),
+    },
+    async () => {
+      const today = new Date();
+
+      const todayString = `${today.getFullYear()}-${String(
+        today.getMonth() + 1
+      ).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+      const events = db
+        .prepare(
+          `SELECT
+             id,
+             title,
+             subject,
+             type,
+             event_date
+           FROM events
+           WHERE event_date >= ?
+           ORDER BY event_date`
+        )
+        .all(todayString);
+
+      const tasks = db
+        .prepare(
+          `SELECT
+             id,
+             title,
+             due_date
+           FROM tasks
+           WHERE due_date IS NOT NULL
+             AND due_date >= ?
+           ORDER BY due_date`
+        )
+        .all(todayString);
+
+      const studySessions = db
+        .prepare(
+          `SELECT
+             id,
+             subject,
+             topic,
+             purpose,
+             session_date,
+             start_time,
+             end_time
+           FROM study_sessions
+           WHERE session_date >= ?
+           ORDER BY session_date, start_time`
+        )
+        .all(todayString);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              from: todayString,
+              events,
+              tasks,
+              studySessions,
+            }),
           },
         ],
       };
@@ -326,22 +539,36 @@ function createMcpServer() {
     "create_study_plan",
     {
       description:
-        "Create a study plan using upcoming assessments, saved notes, and available study times. Earlier quizzes are treated as milestones toward later exams.",
+        "Create a workload-aware study plan using academic events, notes, and available study time.",
       inputSchema: z.object({
         subject: z.string(),
       }),
     },
     async ({ subject }) => {
-      const assessments = db
+      const today = new Date();
+
+      const todayString = `${today.getFullYear()}-${String(
+        today.getMonth() + 1
+      ).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+      // ==================================================
+      // GET EVENTS
+      // ==================================================
+
+      const events = db
         .prepare(
-          `SELECT id, title, subject, type, event_date
+          `SELECT
+             id,
+             title,
+             subject,
+             type,
+             event_date
            FROM events
            WHERE LOWER(subject) = LOWER(?)
-             AND LOWER(type) IN ('quiz', 'exam', 'assignment')
-             AND event_date >= date('now')
+             AND event_date >= ?
            ORDER BY event_date`
         )
-        .all(subject) as {
+        .all(subject, todayString) as {
         id: number;
         title: string;
         subject: string;
@@ -349,20 +576,17 @@ function createMcpServer() {
         event_date: string;
       }[];
 
-      if (assessments.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No upcoming quiz, exam, or assignment found for ${subject}.`,
-            },
-          ],
-        };
-      }
+      // ==================================================
+      // GET NOTES
+      // ==================================================
 
       const notes = db
         .prepare(
-          `SELECT id, title, subject, content
+          `SELECT
+             id,
+             title,
+             subject,
+             content
            FROM notes
            WHERE LOWER(subject) = LOWER(?)
            ORDER BY id`
@@ -374,20 +598,17 @@ function createMcpServer() {
         content: string;
       }[];
 
-      if (notes.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No notes found for ${subject}. Add some notes before creating a study plan.`,
-            },
-          ],
-        };
-      }
+      // ==================================================
+      // GET AVAILABILITY
+      // ==================================================
 
       const availability = db
         .prepare(
-          `SELECT id, day, start_time, end_time
+          `SELECT
+             id,
+             day,
+             start_time,
+             end_time
            FROM availability
            ORDER BY id`
         )
@@ -398,21 +619,108 @@ function createMcpServer() {
         end_time: string;
       }[];
 
-      if (availability.length === 0) {
+      if (events.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: `No study availability found. Add your available study times before creating a study plan.`,
+              text: JSON.stringify({
+                subject,
+                sessionsCreated: 0,
+                message:
+                  "No upcoming academic events were found for this subject.",
+              }),
             },
           ],
         };
       }
 
-      // Existing sessions for this subject.
-      const existingSubjectSessions = db
+      if (notes.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                subject,
+                sessionsCreated: 0,
+                message:
+                  "No saved notes were found for this subject.",
+              }),
+            },
+          ],
+        };
+      }
+
+      if (availability.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                subject,
+                sessionsCreated: 0,
+                message:
+                  "No study availability has been saved.",
+              }),
+            },
+          ],
+        };
+      }
+
+      // ==================================================
+      // FIND ASSESSMENTS
+      // ==================================================
+
+      const assessments = events.filter(
+        (event) =>
+          event.type.toLowerCase() === "quiz" ||
+          event.type.toLowerCase() === "exam"
+      );
+
+      const firstQuiz = events.find(
+        (event) => event.type.toLowerCase() === "quiz"
+      );
+
+      const finalAssessment =
+        assessments.length > 0
+          ? assessments[assessments.length - 1]
+          : events[events.length - 1];
+
+      if (!finalAssessment) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                subject,
+                sessionsCreated: 0,
+                message: "No final assessment was found.",
+              }),
+            },
+          ],
+        };
+      }
+
+      const assessmentDates = new Set(
+        assessments.map(
+          (assessment) => assessment.event_date
+        )
+      );
+
+      // ==================================================
+      // EXISTING SESSIONS
+      // ==================================================
+
+      const existingSessions = db
         .prepare(
-          `SELECT id, subject, topic, session_date, start_time, end_time
+          `SELECT
+             id,
+             subject,
+             topic,
+             purpose,
+             session_date,
+             start_time,
+             end_time
            FROM study_sessions
            WHERE LOWER(subject) = LOWER(?)
            ORDER BY session_date, start_time`
@@ -421,244 +729,225 @@ function createMcpServer() {
         id: number;
         subject: string;
         topic: string;
+        purpose: string;
         session_date: string;
         start_time: string;
         end_time: string;
       }[];
 
-      const dayNames = [
-        "sunday",
-        "monday",
-        "tuesday",
-        "wednesday",
-        "thursday",
-        "friday",
-        "saturday",
-      ];
+      // ==================================================
+      // BACKFILL PURPOSES
+      // ==================================================
 
-      const finalAssessment = assessments[assessments.length - 1]!;
-
-      const firstQuiz = assessments.find(
-        (assessment) => assessment.type === "quiz"
-      );
-
-      // Never schedule on any assessment date.
-      const assessmentDates = new Set(
-        assessments.map((assessment) => assessment.event_date)
-      );
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      const finalAssessmentDate = new Date(
-        `${finalAssessment.event_date}T00:00:00`
-      );
-
-      const availableDates: {
-        date: string;
-        day: string;
-        startTime: string;
-        endTime: string;
-      }[] = [];
-
-      for (
-        let date = new Date(today);
-        date < finalAssessmentDate;
-        date.setDate(date.getDate() + 1)
-      ) {
-        const dateString = `${date.getFullYear()}-${String(
-          date.getMonth() + 1
-        ).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-
-        if (assessmentDates.has(dateString)) {
+      for (const session of existingSessions) {
+        if (session.purpose !== "Study") {
           continue;
         }
 
-        const dayName = dayNames[date.getDay()]!;
+        let purpose = "Study";
 
-        const matchingAvailability = availability.filter(
-          (slot) => slot.day.toLowerCase() === dayName
-        );
+        if (
+          firstQuiz &&
+          session.session_date < firstQuiz.event_date
+        ) {
+          purpose = `Prepare for ${firstQuiz.title}`;
+        } else {
+          purpose = `Prepare for ${finalAssessment.title}`;
+        }
 
-        for (const slot of matchingAvailability) {
-          const alreadyExists = existingSubjectSessions.some(
-            (session) =>
-              session.session_date === dateString &&
-              session.start_time === slot.start_time &&
-              session.end_time === slot.end_time
-          );
-
-          if (!alreadyExists) {
-            availableDates.push({
-              date: dateString,
-              day: dayName,
-              startTime: slot.start_time,
-              endTime: slot.end_time,
-            });
-          }
+        if (purpose !== "Study") {
+          db.prepare(
+            `UPDATE study_sessions
+             SET purpose = ?
+             WHERE id = ?`
+          ).run(purpose, session.id);
         }
       }
 
-      availableDates.sort((a, b) => {
-        const dateComparison = a.date.localeCompare(b.date);
-
-        if (dateComparison !== 0) {
-          return dateComparison;
-        }
-
-        return a.startTime.localeCompare(b.startTime);
-      });
-
-      // ==================================================
-      // NO AVAILABLE SLOTS
-      // ==================================================
-
-      if (
-        availableDates.length === 0 &&
-        existingSubjectSessions.length === 0
-      ) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                subject,
-                milestones: assessments,
-                finalAssessment,
-                notes,
-                sessions: [],
-                planningSummary: {
-                  totalAvailableSlots: 0,
-                  sessionsCreated: 0,
-                  existingSessions: 0,
-                  firstQuiz: firstQuiz ?? null,
-                },
-                message:
-                  `No usable study slots are available before ${finalAssessment.title}. ` +
-                  `Your saved availability does not provide a free slot before the assessment dates. ` +
-                  `Add more availability if you want StudyMate to create study sessions.`,
-              }),
-            },
-          ],
-        };
-      }
-
-      // ==================================================
-      // ASSIGNMENT
-      // ==================================================
-
-      if (finalAssessment.type === "assignment") {
-        const sessions = [...existingSubjectSessions];
-
-        if (availableDates.length > 0) {
-          const slot = availableDates[0]!;
-
-          const result = db
-            .prepare(
-              `INSERT OR IGNORE INTO study_sessions
-               (subject, topic, session_date, start_time, end_time)
-               VALUES (?, ?, ?, ?, ?)`
-            )
-            .run(
-              subject,
-              finalAssessment.title,
-              slot.date,
-              slot.startTime,
-              slot.endTime
-            );
-
-          if (result.changes > 0) {
-            sessions.push({
-              id: Number(result.lastInsertRowid),
-              subject,
-              topic: finalAssessment.title,
-              session_date: slot.date,
-              start_time: slot.startTime,
-              end_time: slot.endTime,
-            });
-          }
-        }
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                subject,
-                milestones: assessments,
-                finalAssessment,
-                notes,
-                sessions,
-                planningSummary: {
-                  availableNewSlots: availableDates.length,
-                  sessionsCreated:
-                    sessions.length - existingSubjectSessions.length,
-                  existingSessions: existingSubjectSessions.length,
-                  totalSessions: sessions.length,
-                },
-              }),
-            },
-          ],
-        };
-      }
-
-      // ==================================================
-      // QUIZZES + EXAMS
-      // ==================================================
-
-      const insertSession = db.prepare(
-        `INSERT OR IGNORE INTO study_sessions
-         (subject, topic, session_date, start_time, end_time)
-         VALUES (?, ?, ?, ?, ?)`
-      );
-
-      const newlyCreatedSessions: {
+      const updatedExistingSessions = db
+        .prepare(
+          `SELECT
+             id,
+             subject,
+             topic,
+             purpose,
+             session_date,
+             start_time,
+             end_time
+           FROM study_sessions
+           WHERE LOWER(subject) = LOWER(?)
+           ORDER BY session_date, start_time`
+        )
+        .all(subject) as {
         id: number;
         subject: string;
         topic: string;
+        purpose: string;
         session_date: string;
+        start_time: string;
+        end_time: string;
+      }[];
+
+      const existingSessionDates = new Set(
+        updatedExistingSessions.map(
+          (session) => session.session_date
+        )
+      );
+
+      // ==================================================
+      // WORKLOAD CALCULATION
+      // ==================================================
+
+      // Each saved note gets up to two study sessions.
+      // This prevents the planner from filling every
+      // available day unnecessarily.
+
+      const targetSessionCount = Math.max(
+        notes.length * 2,
+        1
+      );
+
+      const existingSessionCount =
+        updatedExistingSessions.length;
+
+      const remainingSessions = Math.max(
+        targetSessionCount - existingSessionCount,
+        0
+      );
+
+      // ==================================================
+      // FIND AVAILABLE DATES
+      // ==================================================
+
+      const dayMap: Record<string, number> = {
+        sunday: 0,
+        monday: 1,
+        tuesday: 2,
+        wednesday: 3,
+        thursday: 4,
+        friday: 5,
+        saturday: 6,
+      };
+
+      const newSlots: {
+        date: string;
         start_time: string;
         end_time: string;
       }[] = [];
 
-      // Use every currently available slot.
-      // Notes can repeat across multiple sessions.
-      for (let i = 0; i < availableDates.length; i++) {
-        const slot = availableDates[i]!;
-        const note = notes[i % notes.length]!;
+      const current = new Date(today);
+      current.setHours(0, 0, 0, 0);
 
-        const isBeforeQuiz =
-          firstQuiz !== undefined &&
-          slot.date < firstQuiz.event_date;
+      const finalDate = new Date(
+        `${finalAssessment.event_date}T00:00:00`
+      );
 
-        const purpose = isBeforeQuiz
-          ? `Prepare for ${firstQuiz.title}`
-          : `Prepare for ${finalAssessment.title}`;
+      while (
+        current < finalDate &&
+        newSlots.length < remainingSessions
+      ) {
+        const matchingSlots = availability
+          .filter(
+            (slot) =>
+              dayMap[slot.day.toLowerCase()] ===
+              current.getDay()
+          )
+          .sort((a, b) =>
+            a.start_time.localeCompare(b.start_time)
+          );
 
-        const result = insertSession.run(
-          subject,
-          note.title,
-          slot.date,
-          slot.startTime,
-          slot.endTime
-        );
+        const dateString = `${current.getFullYear()}-${String(
+          current.getMonth() + 1
+        ).padStart(2, "0")}-${String(
+          current.getDate()
+        ).padStart(2, "0")}`;
+
+        // Never schedule on an assessment date.
+        // Never create more than one StudyMate session per day.
+
+        if (
+          !existingSessionDates.has(dateString) &&
+          !assessmentDates.has(dateString) &&
+          matchingSlots.length > 0
+        ) {
+          const slot = matchingSlots[0];
+
+          if (slot) {
+            newSlots.push({
+              date: dateString,
+              start_time: slot.start_time,
+              end_time: slot.end_time,
+            });
+          }
+        }
+
+        current.setDate(current.getDate() + 1);
+      }
+
+      // ==================================================
+      // CREATE SESSIONS
+      // ==================================================
+
+      let sessionsCreated = 0;
+
+      for (let i = 0; i < newSlots.length; i++) {
+        const slot = newSlots[i];
+
+        if (!slot) {
+          continue;
+        }
+
+        const note = notes[i % notes.length];
+
+        if (!note) {
+          continue;
+        }
+
+        let purpose = "Study";
+
+        if (
+          firstQuiz &&
+          slot.date < firstQuiz.event_date
+        ) {
+          purpose = `Prepare for ${firstQuiz.title}`;
+        } else {
+          purpose = `Prepare for ${finalAssessment.title}`;
+        }
+
+        const result = db
+          .prepare(
+            `INSERT OR IGNORE INTO study_sessions
+             (subject, topic, purpose, session_date, start_time, end_time)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            subject,
+            note.title,
+            purpose,
+            slot.date,
+            slot.start_time,
+            slot.end_time
+          );
 
         if (result.changes > 0) {
-          newlyCreatedSessions.push({
-            id: Number(result.lastInsertRowid),
-            subject,
-            topic: note.title,
-            session_date: slot.date,
-            start_time: slot.startTime,
-            end_time: slot.endTime,
-          });
+          sessionsCreated++;
         }
       }
 
-      // Fetch the complete study plan after creation.
-      const allSessions = db
+      // ==================================================
+      // RETURN COMPLETE PLAN
+      // ==================================================
+
+      const finalSessions = db
         .prepare(
-          `SELECT id, subject, topic, session_date, start_time, end_time
+          `SELECT
+             id,
+             subject,
+             topic,
+             purpose,
+             session_date,
+             start_time,
+             end_time
            FROM study_sessions
            WHERE LOWER(subject) = LOWER(?)
            ORDER BY session_date, start_time`
@@ -671,17 +960,17 @@ function createMcpServer() {
             type: "text",
             text: JSON.stringify({
               subject,
-              milestones: assessments,
-              finalAssessment,
-              notes,
-              sessions: allSessions,
-              planningSummary: {
-                availableNewSlots: availableDates.length,
-                sessionsCreated: newlyCreatedSessions.length,
-                existingSessions: existingSubjectSessions.length,
-                totalSessions: allSessions.length,
-                firstQuiz: firstQuiz ?? null,
+              workload: {
+                notesCount: notes.length,
+                targetSessionCount,
+                existingSessionCount,
+                remainingSessions,
               },
+              notes,
+              events,
+              availability,
+              sessionsCreated,
+              existingSessions: finalSessions,
             }),
           },
         ],
@@ -690,7 +979,7 @@ function createMcpServer() {
   );
 
   // ==================================================
-  // STUDY SESSIONS
+  // STUDY SESSION MANAGEMENT
   // ==================================================
 
   server.registerTool(
@@ -700,40 +989,211 @@ function createMcpServer() {
       inputSchema: z.object({
         subject: z.string(),
         topic: z.string(),
-        sessionDate: z.string(),
-        startTime: z.string(),
-        endTime: z.string(),
+        session_date: z.string(),
+        start_time: z.string().optional(),
+        end_time: z.string().optional(),
+        purpose: z.string().optional(),
       }),
     },
     async ({
       subject,
       topic,
-      sessionDate,
-      startTime,
-      endTime,
+      session_date,
+      start_time,
+      end_time,
+      purpose,
     }) => {
       const result = db
         .prepare(
-          `INSERT OR IGNORE INTO study_sessions
-           (subject, topic, session_date, start_time, end_time)
-           VALUES (?, ?, ?, ?, ?)`
+          `INSERT INTO study_sessions
+           (subject, topic, purpose, session_date, start_time, end_time)
+           VALUES (?, ?, ?, ?, ?, ?)`
         )
         .run(
           subject,
           topic,
-          sessionDate,
-          startTime,
-          endTime
+          purpose ?? "Study",
+          session_date,
+          start_time ?? "00:00",
+          end_time ?? "00:00"
         );
 
       return {
         content: [
           {
             type: "text",
-            text:
-              result.changes > 0
-                ? `Study session created for ${subject}: ${topic} on ${sessionDate} from ${startTime} to ${endTime}.`
-                : `That study session already exists.`,
+            text: JSON.stringify({
+              id: result.lastInsertRowid,
+              subject,
+              topic,
+              purpose: purpose ?? "Study",
+              session_date,
+              start_time: start_time ?? "00:00",
+              end_time: end_time ?? "00:00",
+            }),
+          },
+        ],
+      };
+    }
+  );
+
+  // ==================================================
+  // UPDATE STUDY SESSION
+  // ==================================================
+
+  server.registerTool(
+    "update_study_session",
+    {
+      description:
+        "Update the date, time, topic, or purpose of an existing study session. Study sessions cannot be moved onto quiz or exam dates.",
+      inputSchema: z.object({
+        id: z.number(),
+        topic: z.string().optional(),
+        session_date: z.string().optional(),
+        start_time: z.string().optional(),
+        end_time: z.string().optional(),
+        purpose: z.string().optional(),
+      }),
+    },
+    async ({
+      id,
+      topic,
+      session_date,
+      start_time,
+      end_time,
+      purpose,
+    }) => {
+      const existing = db
+        .prepare(
+          `SELECT
+             id,
+             subject,
+             topic,
+             purpose,
+             session_date,
+             start_time,
+             end_time
+           FROM study_sessions
+           WHERE id = ?`
+        )
+        .get(id) as
+        | {
+            id: number;
+            subject: string;
+            topic: string;
+            purpose: string;
+            session_date: string;
+            start_time: string;
+            end_time: string;
+          }
+        | undefined;
+
+      if (!existing) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                updated: false,
+                message:
+                  `Study session ${id} was not found.`,
+              }),
+            },
+          ],
+        };
+      }
+
+      const newTopic = topic ?? existing.topic;
+      const newDate = session_date ?? existing.session_date;
+      const newStartTime =
+        start_time ?? existing.start_time;
+      const newEndTime = end_time ?? existing.end_time;
+      const newPurpose = purpose ?? existing.purpose;
+
+      // Never move a study session onto an academic assessment date.
+      const conflictingEvent = db
+        .prepare(
+          `SELECT
+             id,
+             title,
+             type,
+             event_date
+           FROM events
+           WHERE LOWER(subject) = LOWER(?)
+             AND event_date = ?
+             AND LOWER(type) IN ('quiz', 'exam')
+           LIMIT 1`
+        )
+        .get(existing.subject, newDate) as
+        | {
+            id: number;
+            title: string;
+            type: string;
+            event_date: string;
+          }
+        | undefined;
+
+      if (conflictingEvent) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                updated: false,
+                conflict: true,
+                message:
+                  `Cannot move study session ${id} to ${newDate}. ` +
+                  `${conflictingEvent.title} (${conflictingEvent.type}) ` +
+                  `is scheduled for that date.`,
+                event: conflictingEvent,
+              }),
+            },
+          ],
+        };
+      }
+
+      const result = db
+        .prepare(
+          `UPDATE study_sessions
+           SET topic = ?,
+               purpose = ?,
+               session_date = ?,
+               start_time = ?,
+               end_time = ?
+           WHERE id = ?`
+        )
+        .run(
+          newTopic,
+          newPurpose,
+          newDate,
+          newStartTime,
+          newEndTime,
+          id
+        );
+
+      const updated = db
+        .prepare(
+          `SELECT
+             id,
+             subject,
+             topic,
+             purpose,
+             session_date,
+             start_time,
+             end_time
+           FROM study_sessions
+           WHERE id = ?`
+        )
+        .get(id);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              updated: result.changes > 0,
+              session: updated,
+            }),
           },
         ],
       };
@@ -743,8 +1203,7 @@ function createMcpServer() {
   server.registerTool(
     "list_study_sessions",
     {
-      description:
-        "List study sessions, optionally filtered by subject.",
+      description: "List saved study sessions.",
       inputSchema: z.object({
         subject: z.string().optional(),
       }),
@@ -781,7 +1240,7 @@ function createMcpServer() {
   server.registerTool(
     "delete_study_session",
     {
-      description: "Delete a study session by id.",
+      description: "Delete a study session by ID.",
       inputSchema: z.object({
         id: z.number(),
       }),
@@ -795,10 +1254,10 @@ function createMcpServer() {
         content: [
           {
             type: "text",
-            text:
-              result.changes > 0
-                ? `Study session ${id} deleted successfully.`
-                : `Study session ${id} was not found.`,
+            text: JSON.stringify({
+              deleted: result.changes > 0,
+              id,
+            }),
           },
         ],
       };
@@ -813,31 +1272,32 @@ function createMcpServer() {
     "add_availability",
     {
       description:
-        "Add a study availability slot for a day of the week.",
+        "Add an available study time slot for a day of the week.",
       inputSchema: z.object({
         day: z.string(),
-        startTime: z.string(),
-        endTime: z.string(),
+        start_time: z.string(),
+        end_time: z.string(),
       }),
     },
-    async ({ day, startTime, endTime }) => {
+    async ({ day, start_time, end_time }) => {
       const result = db
         .prepare(
           `INSERT INTO availability
            (day, start_time, end_time)
            VALUES (?, ?, ?)`
         )
-        .run(
-          day.toLowerCase(),
-          startTime,
-          endTime
-        );
+        .run(day, start_time, end_time);
 
       return {
         content: [
           {
             type: "text",
-            text: `Availability added with id ${result.lastInsertRowid}.`,
+            text: JSON.stringify({
+              id: result.lastInsertRowid,
+              day,
+              start_time,
+              end_time,
+            }),
           },
         ],
       };
@@ -847,13 +1307,18 @@ function createMcpServer() {
   server.registerTool(
     "list_availability",
     {
-      description: "List all saved study availability slots.",
+      description:
+        "List all saved study availability slots.",
       inputSchema: z.object({}),
     },
     async () => {
       const availability = db
         .prepare(
-          `SELECT *
+          `SELECT
+             id,
+             day,
+             start_time,
+             end_time
            FROM availability
            ORDER BY id`
         )
@@ -873,7 +1338,8 @@ function createMcpServer() {
   server.registerTool(
     "delete_availability",
     {
-      description: "Delete a study availability slot by id.",
+      description:
+        "Delete an availability slot by ID.",
       inputSchema: z.object({
         id: z.number(),
       }),
@@ -887,10 +1353,10 @@ function createMcpServer() {
         content: [
           {
             type: "text",
-            text:
-              result.changes > 0
-                ? `Availability ${id} deleted successfully.`
-                : `Availability ${id} was not found.`,
+            text: JSON.stringify({
+              deleted: result.changes > 0,
+              id,
+            }),
           },
         ],
       };
@@ -905,24 +1371,10 @@ function createMcpServer() {
     "reset_database",
     {
       description:
-        "Delete all StudyMate data. Requires the exact confirmation string RESET.",
-      inputSchema: z.object({
-        confirmation: z.string(),
-      }),
+        "Delete all tasks, events, notes, study sessions, and availability.",
+      inputSchema: z.object({}),
     },
-    async ({ confirmation }) => {
-      if (confirmation !== "RESET") {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "Database was not reset. Exact confirmation 'RESET' is required.",
-            },
-          ],
-        };
-      }
-
+    async () => {
       db.exec(`
         DELETE FROM tasks;
         DELETE FROM events;
@@ -935,7 +1387,9 @@ function createMcpServer() {
         content: [
           {
             type: "text",
-            text: "StudyMate database reset successfully.",
+            text: JSON.stringify({
+              reset: true,
+            }),
           },
         ],
       };
@@ -946,42 +1400,35 @@ function createMcpServer() {
 }
 
 // ==================================================
-// HTTP MCP SERVER
+// MCP HTTP SERVER
 // ==================================================
 
-const httpServer = createServer(async (req, res) => {
-  if (req.url !== "/mcp") {
-    res.writeHead(404);
-    res.end("Not Found");
-    return;
-  }
+const port = 3000;
 
-  const server = createMcpServer();
-
-  const transport = new NodeStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-  });
-
-  res.on("close", async () => {
-    await transport.close();
-    await server.close();
-  });
-
-  try {
-    await server.connect(transport);
-    await transport.handleRequest(req, res);
-  } catch (error) {
-    console.error("MCP request error:", error);
-
-    if (!res.headersSent) {
-      res.writeHead(500);
-      res.end("Internal Server Error");
+const listener = httpServer.createServer(
+  async (req, res) => {
+    if (req.url !== "/mcp") {
+      res.statusCode = 404;
+      res.end("Not Found");
+      return;
     }
-  }
-});
 
-httpServer.listen(3000, () => {
+    const mcpServer = createServer();
+
+    const transport =
+      new NodeStreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+
+    await mcpServer.connect(transport);
+
+    await transport.handleRequest(req, res);
+  }
+);
+
+listener.listen(port, () => {
   console.log(
-    "StudyMate MCP server running at http://localhost:3000/mcp"
+    `StudyMate MCP server running at http://localhost:${port}/mcp`
   );
 });
